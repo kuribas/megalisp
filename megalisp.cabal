@@ -1,0 +1,33 @@
+Name:		megalisp
+Version: 	0.0.1
+Synopsis:	lisp parser using mega-parsec
+Category: 	Parser
+Copyright: 	Kristof Bastiaensen (2020)
+Stability:	Unstable
+License:	GPL3
+License-file:	LICENSE
+Author:		Kristof Bastiaensen
+Maintainer:	Kristof Bastiaensen
+Bug-Reports: 	https://github.com/kuribas/megalisp/issues
+Build-type:	Simple
+Cabal-version:	>=1.8
+Description:  A lisp parser using megaparsec
+
+source-repository head
+  type:		git
+  location:	https://github.com/kuribas/purets
+
+Library
+  Ghc-options: -Wall
+  Build-depends: base >= 3 && < 5,
+                 unordered-containers > 0.2,
+                 containers > 0.6.0,
+                 mtl > 2.0,                                        
+                 text >= 1.2.4,
+                 megaparsec >= 8.0
+                                  
+  hs-source-dirs: src
+  Exposed-Modules:
+    Data.Lisp
+    Data.Lisp.Parser
+
