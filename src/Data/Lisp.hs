@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
-module Data.Lisp where
+module Data.Lisp (Number(..), SourceRange(..), Lisp(..), parseLisp,
+                  parseLispFile, parseLispExpr, showLispPos, CharParser,
+                  lispParser) where
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Text(Text)
@@ -40,99 +42,141 @@ instance Show Number where
   show (NumRatio r) = show (numerator r) ++ "/" ++ show (denominator r)
   show (ComplexDouble (a :+ b)) = "#(" ++ show a ++ " " ++ show b ++ ")"
 
+-- | A position range in the Lisp source file or string.
+data SourceRange = SourceRange
+  { sourceFrom :: SourcePos
+  , sourceTo :: SourcePos
+  }
+
+instance Show SourceRange where
+  show (SourceRange from to) =
+    "<" ++ showPos from ++ "," ++ showPos to ++ ">"
+    where showPos (SourcePos _ l c) =
+            show (unPos l) ++ ":" ++ show (unPos c)
+
 data Lisp =
-  LispString Text |
-  LispNumber Number |
-  LispSymbol Text |
-  LispVector [Lisp] |
-  LispList [Lisp] |
-  LispDotList [Lisp] Lisp
+  LispString Text SourceRange |
+  LispNumber Number SourceRange |
+  LispSymbol Text SourceRange |
+  LispVector [Lisp] SourceRange |
+  LispList [Lisp] SourceRange |
+  LispDotList [Lisp] Lisp SourceRange
 
 instance Show Lisp where
-  show (LispString t) = show t
-  show (LispNumber n) = show n
-  show (LispSymbol s)
+  show (LispString t _) = show t
+  show (LispNumber n _) = show n
+  show (LispSymbol s _)
     | Text.null s = "||"
     | Text.any (`elem` specialChars) s = '|': Text.unpack s ++ "|"
     | otherwise = Text.unpack s
     
-  show (LispVector l) =
+  show (LispVector l _) =
     "#(" ++ unwords (map show l) ++ ")"
-  show (LispList l) = "(" ++ unwords (map show l) ++ ")"
-  show (LispDotList l e) =
+  show (LispList l _) = "(" ++ unwords (map show l) ++ ")"
+  show (LispDotList l e _) =
     "(" ++ unwords (map show l) ++ " . " ++ show e ++ ")"
+
+-- | show the lisp with position info
+showLispPos :: Lisp -> String
+showLispPos (LispString t p) = show t ++ show p
+showLispPos (LispNumber n p) = show n ++ show p
+showLispPos (LispSymbol s p)
+  | Text.null s = "||" ++ show p
+  | Text.any (`elem` specialChars) s = '|': Text.unpack s ++ "|" ++ show p
+  | otherwise = Text.unpack s ++ show p
+showLispPos (LispVector l p) =
+  "#(" ++ unwords (map showLispPos l) ++ ")" ++ show p
+showLispPos (LispList l p) = "(" ++ unwords (map showLispPos l) ++ ")" ++ show p
+showLispPos (LispDotList l e p) =
+  "(" ++ unwords (map showLispPos l) ++ " . " ++ showLispPos e ++ ")" ++ show p
 
 instance Read Lisp where
   readsPrec _ input =
-    case runParser' (whiteSpace >> lispExprP) $
-         State input 0 (PosState input 0 (initialPos "") (mkPos 0) []) [] of
+    case runParser' (whiteSpace >> withSourceRange lispExprP) $
+         State input 0 (PosState input 0 (initialPos "read") (mkPos 0) []) [] of
       (_, Left _) -> []
       (rest, Right r) -> [(r, stateInput rest)]
 
+dummyRange :: SourceRange
+dummyRange = SourceRange (initialPos "dummy") (initialPos "dummy")
 
-parseLispFile :: String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
-parseLispFile file = runParser (many lispExprP <* whiteSpace <* eof) file <$>
-                     Text.readFile file
-
-parseLisp :: String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
-parseLisp = runParser (many lispExprP <* whiteSpace <* eof)
-
-parseLispExpr :: String -> Text -> Either (ParseErrorBundle Text Void) Lisp
-parseLispExpr = runParser lispExprP
-
+-- | A megaparsec parser that has characters as tokens.
 type CharParser t a = (Stream t, Token t ~ Char)
                     => Parsec Void t a
+
+-- | A megaparsec parser for lisp expressions
+lispParser :: CharParser t Lisp
+lispParser = lispParser
+
+-- | Parse a lisp file
+parseLispFile :: String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
+parseLispFile file = 
+  runParser (many lispParser <* whiteSpace <* eof) file
+  <$> Text.readFile file
+
+-- | @parse source text@: parse the text into a list of lisp
+-- expressions.  Source is used for the error messages, and in the
+-- `SourceRanges`.
+parseLisp :: String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
+parseLisp = runParser (many lispParser <* whiteSpace <* eof)
+
+-- | parse a single expression
+parseLispExpr :: String -> Text -> Either (ParseErrorBundle Text Void) Lisp
+parseLispExpr = runParser lispParser
 
 signP :: CharParser t String
 signP = option "" $ ("" <$ char '+') <|> ("-" <$ char '-')
 
+withSourceRange :: CharParser t (SourceRange -> a) -> CharParser t a
+withSourceRange p = do
+  startRange <- getSourcePos
+  mkParser <- p
+  endRange <- getSourcePos
+  pure $ mkParser $ SourceRange startRange endRange
+
 -- numbers not starting with #
-numP :: CharParser t Lisp
+numP :: CharParser t (SourceRange -> Lisp)
 numP = label "number" $ do
   sign <- signP
   -- 'try' the dot, because it could be a single dot, and then we need
   -- to backtrack
-  (numNumP sign <|> try (dotNumP sign)) <*
-    notFollowedBy identifierBlocksP
-  
-    where
-      decimalP :: CharParser t String
+  let decimalP :: CharParser t String
       decimalP = some digitChar
 
       -- number starting with number
-      numNumP :: String -> CharParser t Lisp
-      numNumP sign = do
+      numNumP :: CharParser t (SourceRange -> Lisp)
+      numNumP = do
         decimal <- decimalP
-        choice [ ratioP sign decimal
-               , try (floatP sign decimal)
-               , optional (char '.') >>
-                 pure (LispNumber $ Integer $ read (sign++decimal))
+        choice [ ratioP decimal
+               , try (floatP decimal)
+               , do _ <- optional (char '.')
+                    pure $ LispNumber $ Integer $ read (sign++decimal)
                ]
 
-      ratioP :: String -> String -> CharParser t Lisp
-      ratioP s d = do
+      ratioP :: String -> CharParser t (SourceRange -> Lisp)
+      ratioP d = do
         _ <- char '/'
         denom <- decimalP
-        pure $ LispNumber $ NumRatio $ read (s++d) %
-          read denom
+        pure $ LispNumber $ NumRatio $ read (sign++d) % read denom
 
-      floatP :: String -> String -> CharParser t Lisp
-      floatP s d = 
-        exptP s d "0"
+      floatP :: String -> CharParser t (SourceRange -> Lisp)
+      floatP d = 
+        exptP sign d "0"
         <|> do _ <- char '.'
-               exptP s d "0" <|> do
+               exptP sign d "0" <|> do
                  fract <- decimalP
-                 option (LispNumber $ DoubleFloat $ read (s++d ++ "." ++ fract))
-                   $ exptP s d fract
-
-      dotNumP sign = do
+                 exptP sign d fract <|>
+                   do pure $ LispNumber $ DoubleFloat $
+                        read (sign++d ++ "." ++ fract)
+      dotNumP = do
         _ <- char '.'
         fract <- decimalP
         exptP sign "0" fract <|>
           pure (LispNumber $ DoubleFloat $ read $ sign++"0." ++ fract)
 
-
-exptP :: String -> String -> String -> CharParser t Lisp
+  (numNumP <|> try dotNumP) <* notFollowedBy identifierBlocksP
+  
+exptP :: String -> String -> String -> CharParser t (SourceRange -> Lisp)
 exptP sign num fract = do
   -- e would be context dependend, but I am defaulting it to Double here
   e <- oneOf ("esd" :: String)
@@ -140,21 +184,21 @@ exptP sign num fract = do
   expt <- some digitChar
   let toFloat :: (Read a, Num a) => a
       toFloat = read $ sign ++ num ++ "." ++ fract ++ "e" ++ eSign:expt
-  case e of
-    's' -> pure $ LispNumber $ SingleFloat toFloat
-    _   -> pure $ LispNumber $ DoubleFloat toFloat
+  pure $ LispNumber $ case e of
+    's' -> SingleFloat toFloat
+    _   -> DoubleFloat toFloat
 
 quoteAnyChar :: CharParser t Char
 quoteAnyChar = char '\\' >> anySingle
 
-stringP :: CharParser t Lisp
+stringP :: CharParser t (SourceRange -> Lisp)
 stringP =
-  label "string" $
-  fmap LispString $
-  between (char '"') (char '"') $
-  Text.pack <$> many (quoteAnyChar <|> noneOf ("\\\"" :: String) )
+  label "string" $ do 
+  str <- between (char '"') (char '"') $
+         Text.pack <$> many (quoteAnyChar <|> noneOf ("\\\"" :: String))
+  pure $ LispString str
 
-identifierP :: CharParser t Lisp
+identifierP :: CharParser t (SourceRange -> Lisp)
 identifierP =
   label "identifier" $ do
   str <- fmap Text.pack $ (++) <$> (firstBlock <|> quotedBlockP) <*> moreBlocksP
@@ -181,10 +225,7 @@ blockCharP = notSpecial <|> char '#' <|> quoteAnyChar
 identifierBlocksP :: CharParser t String
 identifierBlocksP = concat <$> some (some blockCharP <|> quotedBlockP)
 
-singleton :: CharParser t a -> CharParser t [a]
-singleton = fmap (:[])
-
-lispExprP :: CharParser t Lisp
+lispExprP :: CharParser t (SourceRange -> Lisp)
 lispExprP = choice [ stringP
                    , listP
                    , try numP
@@ -193,18 +234,18 @@ lispExprP = choice [ stringP
                    , readersP
                    ]
 
-listP :: CharParser t Lisp
+listP :: CharParser t (SourceRange -> Lisp)
 listP =
   label "list" $
   between (char '(') (char ')') $ do
-  elems <- lispExprP `sepEndBy` whiteSpace
+  elems <- lispParser `sepEndBy` whiteSpace
   dotElem <- optional $ 
     char '.' *> whiteSpace *>
-    lispExprP <* whiteSpace
+    lispParser <* whiteSpace
   pure $ case dotElem of
     Nothing -> LispList elems
-    Just (LispList l) -> LispList $ elems ++ l
-    Just (LispDotList l el) -> LispDotList (elems ++ l) el
+    Just (LispList l _) ->  LispList $ elems ++ l
+    Just (LispDotList l el _) -> LispDotList (elems ++ l) el
     Just el -> LispDotList elems el
 
 commentP :: CharParser t ()
@@ -215,37 +256,37 @@ commentP =
 whiteSpace :: CharParser t ()
 whiteSpace = () <$ many (space1 <|> commentP)
 
-whiteSpace1 :: CharParser t ()
-whiteSpace1 = () <$ some (space1 <|> commentP)
+quoteSymbol :: SourceRange -> Lisp
+quoteSymbol (SourceRange from _) =
+  LispSymbol "quote" (SourceRange from afterFrom)
+  where afterFrom = from {sourceColumn = mkPos $ 1 + unPos (sourceColumn from)}
 
-quoteSymbol :: Lisp
-quoteSymbol = LispSymbol "quote"
-
-quoteP :: CharParser t Lisp
+quoteP :: CharParser t (SourceRange -> Lisp)
 quoteP = do
   _ <- char '\'' >> whiteSpace
-  (\expr -> LispList [quoteSymbol, expr]) <$> lispExprP
+  expr <- lispParser
+  pure $ \range -> LispList [quoteSymbol range, expr] range
   
-readersP :: CharParser t Lisp
+readersP :: CharParser t (SourceRange -> Lisp)
 readersP = do
   _ <- char '#'
   vectorReaderP <|>
     (octalReaderP <|> complexReaderP <|> hexReaderP <|> binaryReaderP)
     <* notFollowedBy identifierBlocksP
 
-vectorReaderP :: CharParser t Lisp
+vectorReaderP :: CharParser t (SourceRange -> Lisp)
 vectorReaderP = 
   between (char '(') (char ')') $
-  LispVector <$> (lispExprP `sepEndBy` whiteSpace)
+  LispVector <$> (lispParser `sepEndBy` whiteSpace)
 
-octalReaderP :: CharParser t Lisp  
+octalReaderP :: CharParser t (SourceRange -> Lisp)
 octalReaderP = do
   _ <- char 'o' <|> char 'O'
   sign <- signP
   digits <- some octDigitChar
   pure $ LispNumber $ Integer $ read $ sign ++ "0o" ++ digits
 
-binaryReaderP :: CharParser t Lisp
+binaryReaderP :: CharParser t (SourceRange -> Lisp)
 binaryReaderP = do
   _ <- char 'b' <|> char 'B'
   sign <- signP
@@ -256,7 +297,7 @@ binaryReaderP = do
                 | otherwise = digitSum
   pure $ LispNumber $ Integer signedSum
 
-hexReaderP :: CharParser t Lisp
+hexReaderP :: CharParser t (SourceRange -> Lisp)
 hexReaderP = do
   _ <- char 'x' <|> char 'X'
   sign <- signP
@@ -271,14 +312,14 @@ convertToDouble l = case l of
   NumRatio r -> realToFrac r
   ComplexDouble _ -> error "convertToDouble"
 
-complexReaderP :: CharParser t Lisp
+complexReaderP :: CharParser t (SourceRange -> Lisp)
 complexReaderP = do
   _ <- char 'c' <|> char 'C'
   between (char '(') (char ')') $ do
     _ <- many whiteSpace
-    LispNumber rl <- numP
+    LispNumber rl _ <- ($ dummyRange) <$> numP
     _ <- some whiteSpace
-    LispNumber imag <- numP
+    LispNumber imag _ <- ($ dummyRange) <$> numP
     _ <- many whiteSpace
     pure $ LispNumber $ ComplexDouble $
       convertToDouble rl :+ convertToDouble imag
