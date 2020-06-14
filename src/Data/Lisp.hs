@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Data.Lisp where
 import qualified Data.Text as Text
 import Data.Text(Text)
@@ -49,7 +50,7 @@ instance Show Lisp where
   show (LispNumber n) = show n
   show (LispSymbol s)
     | Text.null s = "||"
-    | Text.any (`elem` specialChars) s = '|': show s ++ "|"
+    | Text.any (`elem` specialChars) s = '|': Text.unpack s ++ "|"
     | otherwise = Text.unpack s
     
   show (LispVector l) =
@@ -195,9 +196,14 @@ whiteSpace = () <$ many (space1 <|> commentP)
 whiteSpace1 :: Parser ()
 whiteSpace1 = () <$ some (space1 <|> commentP)
 
-quoteP :: Parser Lisp
-quoteP = LispList <$> singleton (char '\'' >> many whiteSpace >> lispExprP)
+quoteSymbol :: Lisp
+quoteSymbol = LispSymbol "quote"
 
+quoteP :: Parser Lisp
+quoteP = do
+  _ <- char '\'' >> whiteSpace
+  (\expr -> LispList [quoteSymbol, expr]) <$> lispExprP
+  
 readersP :: Parser Lisp
 readersP = do
   _ <- char '#'

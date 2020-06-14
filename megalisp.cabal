@@ -29,5 +29,4 @@ Library
   hs-source-dirs: src
   Exposed-Modules:
     Data.Lisp
-    Data.Lisp.Parser
 
