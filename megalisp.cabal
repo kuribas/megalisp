@@ -15,17 +15,14 @@ Description:  A lisp parser using megaparsec
 
 source-repository head
   type:		git
-  location:	https://github.com/kuribas/purets
+  location:	https://github.com/kuribas/megalisp
 
 Library
   Ghc-options: -Wall
   Build-depends: base >= 3 && < 5,
-                 unordered-containers > 0.2,
-                 containers > 0.6.0,
                  mtl > 2.0,                                        
                  text >= 1.2.4,
                  megaparsec >= 8.0
-                                  
   hs-source-dirs: src
   Exposed-Modules:
     Data.Lisp

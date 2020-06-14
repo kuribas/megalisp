@@ -64,7 +64,7 @@ instance Show Lisp where
 
 instance Read Lisp where
   readsPrec _ input =
-    case runParser' lispExprP $
+    case runParser' (whiteSpace >> lispExprP) $
          State input 0 (PosState input 0 (initialPos "") (mkPos 0) []) [] of
       (_, Left _) -> []
       (rest, Right r) -> [(r, stateInput rest)]
