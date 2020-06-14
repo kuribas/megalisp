@@ -1,6 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeFamilies #-}
 module Data.Lisp where
 import qualified Data.Text as Text
+import qualified Data.Text.IO as Text
 import Data.Text(Text)
 import Control.Applicative hiding (some, many)
 import Data.Ratio
@@ -58,14 +61,33 @@ instance Show Lisp where
   show (LispList l) = "(" ++ unwords (map show l) ++ ")"
   show (LispDotList l e) =
     "(" ++ unwords (map show l) ++ " . " ++ show e ++ ")"
-  
-type Parser = Parsec Void Text
 
-signP :: Parser String
+instance Read Lisp where
+  readsPrec _ input =
+    case runParser' lispExprP $
+         State input 0 (PosState input 0 (initialPos "") (mkPos 0) []) [] of
+      (_, Left _) -> []
+      (rest, Right r) -> [(r, stateInput rest)]
+
+
+parseLispFile :: String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
+parseLispFile file = runParser (many lispExprP <* whiteSpace <* eof) file <$>
+                     Text.readFile file
+
+parseLisp :: String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
+parseLisp = runParser (many lispExprP <* whiteSpace <* eof)
+
+parseLispExpr :: String -> Text -> Either (ParseErrorBundle Text Void) Lisp
+parseLispExpr = runParser lispExprP
+
+type CharParser t a = (Stream t, Token t ~ Char)
+                    => Parsec Void t a
+
+signP :: CharParser t String
 signP = option "" $ ("" <$ char '+') <|> ("-" <$ char '-')
 
 -- numbers not starting with #
-numP :: Parser Lisp
+numP :: CharParser t Lisp
 numP = label "number" $ do
   sign <- signP
   -- 'try' the dot, because it could be a single dot, and then we need
@@ -74,11 +96,11 @@ numP = label "number" $ do
     notFollowedBy identifierBlocksP
   
     where
-      decimalP :: Parser String
+      decimalP :: CharParser t String
       decimalP = some digitChar
 
       -- number starting with number
-      numNumP :: String -> Parser Lisp
+      numNumP :: String -> CharParser t Lisp
       numNumP sign = do
         decimal <- decimalP
         choice [ ratioP sign decimal
@@ -87,14 +109,14 @@ numP = label "number" $ do
                  pure (LispNumber $ Integer $ read (sign++decimal))
                ]
 
-      ratioP :: String -> String -> Parser Lisp
+      ratioP :: String -> String -> CharParser t Lisp
       ratioP s d = do
         _ <- char '/'
         denom <- decimalP
         pure $ LispNumber $ NumRatio $ read (s++d) %
           read denom
 
-      floatP :: String -> String -> Parser Lisp
+      floatP :: String -> String -> CharParser t Lisp
       floatP s d = 
         exptP s d "0"
         <|> do _ <- char '.'
@@ -110,7 +132,7 @@ numP = label "number" $ do
           pure (LispNumber $ DoubleFloat $ read $ sign++"0." ++ fract)
 
 
-exptP :: String -> String -> String -> Parser Lisp
+exptP :: String -> String -> String -> CharParser t Lisp
 exptP sign num fract = do
   -- e would be context dependend, but I am defaulting it to Double here
   e <- oneOf ("esd" :: String)
@@ -122,17 +144,17 @@ exptP sign num fract = do
     's' -> pure $ LispNumber $ SingleFloat toFloat
     _   -> pure $ LispNumber $ DoubleFloat toFloat
 
-quoteAnyChar :: Parser Char
+quoteAnyChar :: CharParser t Char
 quoteAnyChar = char '\\' >> anySingle
 
-stringP :: Parser Lisp
+stringP :: CharParser t Lisp
 stringP =
   label "string" $
   fmap LispString $
   between (char '"') (char '"') $
   Text.pack <$> many (quoteAnyChar <|> noneOf ("\\\"" :: String) )
 
-identifierP :: Parser Lisp
+identifierP :: CharParser t Lisp
 identifierP =
   label "identifier" $ do
   str <- fmap Text.pack $ (++) <$> (firstBlock <|> quotedBlockP) <*> moreBlocksP
@@ -140,29 +162,29 @@ identifierP =
     then fail ("all dots" :: String)
     else pure $ LispSymbol str
 
-  where firstBlock :: Parser String
+  where firstBlock :: CharParser t String
         firstBlock = (:) <$> (notSpecial <|> quoteAnyChar) <*> many blockCharP
 
-        moreBlocksP :: Parser String
+        moreBlocksP :: CharParser t String
         moreBlocksP = concat <$> many (some blockCharP <|> quotedBlockP)
         
-quotedBlockP :: Parser String
+quotedBlockP :: CharParser t String
 quotedBlockP = between (char '|') (char '|') $
                many (noneOf ("|\\" :: String) <|> quoteAnyChar)
 
-notSpecial :: Parser Char
+notSpecial :: CharParser t Char
 notSpecial = toUpper <$> noneOf specialChars
 
-blockCharP :: Parser Char
+blockCharP :: CharParser t Char
 blockCharP = notSpecial <|> char '#' <|> quoteAnyChar
           
-identifierBlocksP :: Parser String
+identifierBlocksP :: CharParser t String
 identifierBlocksP = concat <$> some (some blockCharP <|> quotedBlockP)
 
-singleton :: Parser a -> Parser [a]
+singleton :: CharParser t a -> CharParser t [a]
 singleton = fmap (:[])
 
-lispExprP :: Parser Lisp
+lispExprP :: CharParser t Lisp
 lispExprP = choice [ stringP
                    , listP
                    , try numP
@@ -171,7 +193,7 @@ lispExprP = choice [ stringP
                    , readersP
                    ]
 
-listP :: Parser Lisp
+listP :: CharParser t Lisp
 listP =
   label "list" $
   between (char '(') (char ')') $ do
@@ -185,45 +207,45 @@ listP =
     Just (LispDotList l el) -> LispDotList (elems ++ l) el
     Just el -> LispDotList elems el
 
-commentP :: Parser ()
+commentP :: CharParser t ()
 commentP =
   label "comment" $
   char ';' >> noneOf ("\r\n" :: String) >> void eol
 
-whiteSpace :: Parser ()
+whiteSpace :: CharParser t ()
 whiteSpace = () <$ many (space1 <|> commentP)
 
-whiteSpace1 :: Parser ()
+whiteSpace1 :: CharParser t ()
 whiteSpace1 = () <$ some (space1 <|> commentP)
 
 quoteSymbol :: Lisp
 quoteSymbol = LispSymbol "quote"
 
-quoteP :: Parser Lisp
+quoteP :: CharParser t Lisp
 quoteP = do
   _ <- char '\'' >> whiteSpace
   (\expr -> LispList [quoteSymbol, expr]) <$> lispExprP
   
-readersP :: Parser Lisp
+readersP :: CharParser t Lisp
 readersP = do
   _ <- char '#'
   vectorReaderP <|>
     (octalReaderP <|> complexReaderP <|> hexReaderP <|> binaryReaderP)
     <* notFollowedBy identifierBlocksP
 
-vectorReaderP :: Parser Lisp
+vectorReaderP :: CharParser t Lisp
 vectorReaderP = 
   between (char '(') (char ')') $
   LispVector <$> (lispExprP `sepEndBy` whiteSpace)
 
-octalReaderP :: Parser Lisp  
+octalReaderP :: CharParser t Lisp  
 octalReaderP = do
   _ <- char 'o' <|> char 'O'
   sign <- signP
   digits <- some octDigitChar
   pure $ LispNumber $ Integer $ read $ sign ++ "0o" ++ digits
 
-binaryReaderP :: Parser Lisp
+binaryReaderP :: CharParser t Lisp
 binaryReaderP = do
   _ <- char 'b' <|> char 'B'
   sign <- signP
@@ -234,7 +256,7 @@ binaryReaderP = do
                 | otherwise = digitSum
   pure $ LispNumber $ Integer signedSum
 
-hexReaderP :: Parser Lisp
+hexReaderP :: CharParser t Lisp
 hexReaderP = do
   _ <- char 'x' <|> char 'X'
   sign <- signP
@@ -249,7 +271,7 @@ convertToDouble l = case l of
   NumRatio r -> realToFrac r
   ComplexDouble _ -> error "convertToDouble"
 
-complexReaderP :: Parser Lisp
+complexReaderP :: CharParser t Lisp
 complexReaderP = do
   _ <- char 'c' <|> char 'C'
   between (char '(') (char ')') $ do
