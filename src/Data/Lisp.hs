@@ -118,7 +118,7 @@ parseLispFile file =
 -- expressions.  Source is used for the error messages, and in the
 -- `SourceRanges`.
 parseLisp :: String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
-parseLisp = runParser (many lispParser <* whiteSpace <* eof)
+parseLisp = runParser (sepEndBy lispParser whiteSpace <* eof)
 
 -- | parse a single expression
 parseLispExpr :: String -> Text -> Either (ParseErrorBundle Text Void) Lisp
@@ -251,7 +251,9 @@ listP =
 commentP :: CharParser t ()
 commentP =
   label "comment" $
-  char ';' >> noneOf ("\r\n" :: String) >> void eol
+  char ';' >>
+  many (noneOf ("\r\n" :: String)) >>
+  (void eol <|> eof)
 
 whiteSpace :: CharParser t ()
 whiteSpace = () <$ many (space1 <|> commentP)
