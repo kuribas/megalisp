@@ -106,7 +106,7 @@ type CharParser t a = (Stream t, Token t ~ Char)
 
 -- | A megaparsec parser for lisp expressions
 lispParser :: CharParser t Lisp
-lispParser = lispParser
+lispParser = withSourceRange lispExprP
 
 -- | Parse a lisp file
 parseLispFile :: String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
