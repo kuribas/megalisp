@@ -272,8 +272,8 @@ quoteP = do
 readersP :: CharParser t (SourceRange -> Lisp)
 readersP = do
   _ <- char '#'
-  vectorReaderP <|>
-    (octalReaderP <|> complexReaderP <|> hexReaderP <|> binaryReaderP)
+  (vectorReaderP <|> complexReaderP) <|>
+    (octalReaderP <|> hexReaderP <|> binaryReaderP)
     <* notFollowedBy identifierBlocksP
 
 vectorReaderP :: CharParser t (SourceRange -> Lisp)
