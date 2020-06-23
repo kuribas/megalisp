@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module Data.Lisp (Number(..), SourceRange(..), Lisp(..), parseLisp,
                   parseLispFile, parseLispExpr, showLispPos, CharParser,
                   lispParser) where
@@ -30,7 +31,7 @@ replaceChar from to (c:cs)
   | otherwise = c:replaceChar from to cs
 
 specialChars :: String
-specialChars = "()#\"\\,'| ;" 
+specialChars = "()#\"\\,'`| ;" 
 
 instance Show Number where
   show (Integer i) = show i
@@ -202,8 +203,8 @@ identifierP :: CharParser t (SourceRange -> Lisp)
 identifierP =
   label "identifier" $ do
   str <- fmap Text.pack $ (++) <$> (firstBlock <|> quotedBlockP) <*> moreBlocksP
-  if Text.all (== '.') str
-    then fail ("all dots" :: String)
+  if str == "."
+    then fail ("dot" :: String)
     else pure $ LispSymbol str
 
   where firstBlock :: CharParser t String
@@ -220,7 +221,7 @@ notSpecial :: CharParser t Char
 notSpecial = toUpper <$> noneOf specialChars
 
 blockCharP :: CharParser t Char
-blockCharP = notSpecial <|> char '#' <|> quoteAnyChar
+blockCharP = notSpecial <|> char '#' <|> char '`' <|> quoteAnyChar
           
 identifierBlocksP :: CharParser t String
 identifierBlocksP = concat <$> some (some blockCharP <|> quotedBlockP)
@@ -258,16 +259,22 @@ commentP =
 whiteSpace :: CharParser t ()
 whiteSpace = () <$ many (space1 <|> commentP)
 
-quoteSymbol :: SourceRange -> Lisp
-quoteSymbol (SourceRange from _) =
-  LispSymbol "quote" (SourceRange from afterFrom)
-  where afterFrom = from {sourceColumn = mkPos $ 1 + unPos (sourceColumn from)}
+quoteSymbol :: String -> Text -> CharParser t (SourceRange -> Lisp)
+quoteSymbol symbol quoteExpansion  = do
+  foldMap (void <$> char) symbol
+  pure $ \(SourceRange from _) ->
+    LispSymbol quoteExpansion $ SourceRange from $
+    from {sourceColumn = mkPos $ length symbol + unPos (sourceColumn from)}
 
 quoteP :: CharParser t (SourceRange -> Lisp)
 quoteP = do
-  _ <- char '\'' >> whiteSpace
+  quote <- (quoteSymbol "'" "quote" <|>
+            try (quoteSymbol ",@" "unquote-splicing") <|>
+            quoteSymbol "," "unquote" <|>
+            quoteSymbol "`" "quasiquote")
+           <* whiteSpace
   expr <- lispParser
-  pure $ \range -> LispList [quoteSymbol range, expr] range
+  pure $ \range -> LispList [quote range, expr] range
   
 readersP :: CharParser t (SourceRange -> Lisp)
 readersP = do
