@@ -2,6 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
 module Data.Lisp (Number(..), SourceRange(..), Lisp(..), parseLisp,
                   parseLispFile, parseLispExpr, showLispPos, CharParser,
                   lispParser) where
@@ -102,8 +103,11 @@ dummyRange :: SourceRange
 dummyRange = SourceRange (initialPos "dummy") (initialPos "dummy")
 
 -- | A megaparsec parser that has characters as tokens.
-type CharParser t a = (Stream t, Token t ~ Char)
-                    => Parsec Void t a
+type CharParser t a = (Stream t, Token t ~ Char
+#if MIN_VERSION_megaparsec(9,0,0)
+                      , TraversableStream t
+#endif
+                      ) => Parsec Void t a
 
 -- | A megaparsec parser for lisp expressions
 lispParser :: CharParser t Lisp
