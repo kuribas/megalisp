@@ -5,7 +5,7 @@
 {-# LANGUAGE CPP #-}
 module Data.Lisp (Number(..), SourceRange(..), Lisp(..), parseLisp,
                   parseLispFile, parseLispExpr, showLispPos, CharParser,
-                  lispParser) where
+                  lispParser, KeepSymbolCasing(..)) where
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text
 import Data.Text(Text)
@@ -94,13 +94,16 @@ showLispPos (LispDotList l e p) =
 
 instance Read Lisp where
   readsPrec _ input =
-    case runParser' (whiteSpace >> withSourceRange lispExprP) $
+    case runParser' (whiteSpace >> withSourceRange (lispExprP UppercaseSymbol)) $
          State input 0 (PosState input 0 (initialPos "read") (mkPos 0) []) [] of
       (_, Left _) -> []
       (rest, Right r) -> [(r, stateInput rest)]
 
 dummyRange :: SourceRange
 dummyRange = SourceRange (initialPos "dummy") (initialPos "dummy")
+
+data KeepSymbolCasing =
+  KeepSymbol | UppercaseSymbol
 
 -- | A megaparsec parser that has characters as tokens.
 type CharParser t a = (Stream t, Token t ~ Char
@@ -110,24 +113,24 @@ type CharParser t a = (Stream t, Token t ~ Char
                       ) => Parsec Void t a
 
 -- | A megaparsec parser for lisp expressions
-lispParser :: CharParser t Lisp
-lispParser = withSourceRange lispExprP
+lispParser :: KeepSymbolCasing -> CharParser t Lisp
+lispParser ksc = withSourceRange (lispExprP ksc)
 
 -- | Parse a lisp file
-parseLispFile :: String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
-parseLispFile file = 
-  runParser (many lispParser <* whiteSpace <* eof) file
+parseLispFile :: KeepSymbolCasing -> String -> IO (Either (ParseErrorBundle Text Void) [Lisp])
+parseLispFile ksc file = 
+  runParser (many (lispParser ksc) <* whiteSpace <* eof) file
   <$> Text.readFile file
 
 -- | @parse source text@: parse the text into a list of lisp
 -- expressions.  Source is used for the error messages, and in the
 -- `SourceRanges`.
-parseLisp :: String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
-parseLisp = runParser (sepEndBy lispParser whiteSpace <* eof)
+parseLisp :: KeepSymbolCasing -> String -> Text -> Either (ParseErrorBundle Text Void) [Lisp]
+parseLisp ksc = runParser (sepEndBy (lispParser ksc) whiteSpace <* eof)
 
 -- | parse a single expression
-parseLispExpr :: String -> Text -> Either (ParseErrorBundle Text Void) Lisp
-parseLispExpr = runParser lispParser
+parseLispExpr :: KeepSymbolCasing -> String -> Text -> Either (ParseErrorBundle Text Void) Lisp
+parseLispExpr ksc = runParser (lispParser ksc)
 
 signP :: CharParser t String
 signP = option "" $ ("" <$ char '+') <|> ("-" <$ char '-')
@@ -140,8 +143,8 @@ withSourceRange p = do
   pure $ mkParser $ SourceRange startRange endRange
 
 -- numbers not starting with #
-numP :: CharParser t (SourceRange -> Lisp)
-numP = label "number" $ do
+numP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+numP ksc = label "number" $ do
   sign <- signP
   -- 'try' the dot, because it could be a single dot, and then we need
   -- to backtrack
@@ -179,7 +182,7 @@ numP = label "number" $ do
         exptP sign "0" fract <|>
           pure (LispNumber $ DoubleFloat $ read $ sign++"0." ++ fract)
 
-  (numNumP <|> try dotNumP) <* notFollowedBy identifierBlocksP
+  (numNumP <|> try dotNumP) <* notFollowedBy (identifierBlocksP ksc)
   
 exptP :: String -> String -> String -> CharParser t (SourceRange -> Lisp)
 exptP sign num fract = do
@@ -203,8 +206,8 @@ stringP =
          Text.pack <$> many (quoteAnyChar <|> noneOf ("\\\"" :: String))
   pure $ LispString str
 
-identifierP :: CharParser t (SourceRange -> Lisp)
-identifierP =
+identifierP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+identifierP ksc =
   label "identifier" $ do
   str <- fmap Text.pack $ (++) <$> (firstBlock <|> quotedBlockP) <*> moreBlocksP
   if str == "."
@@ -212,41 +215,42 @@ identifierP =
     else pure $ LispSymbol str
 
   where firstBlock :: CharParser t String
-        firstBlock = (:) <$> (notSpecial <|> quoteAnyChar) <*> many blockCharP
+        firstBlock = (:) <$> (notSpecial ksc <|> quoteAnyChar) <*> many (blockCharP ksc)
 
         moreBlocksP :: CharParser t String
-        moreBlocksP = concat <$> many (some blockCharP <|> quotedBlockP)
+        moreBlocksP = concat <$> many (some (blockCharP ksc) <|> quotedBlockP)
         
 quotedBlockP :: CharParser t String
 quotedBlockP = between (char '|') (char '|') $
                many (noneOf ("|\\" :: String) <|> quoteAnyChar)
 
-notSpecial :: CharParser t Char
-notSpecial = toUpper <$> noneOf specialChars
+notSpecial :: KeepSymbolCasing -> CharParser t Char
+notSpecial UppercaseSymbol = toUpper <$> noneOf specialChars
+notSpecial _ = noneOf specialChars
 
-blockCharP :: CharParser t Char
-blockCharP = notSpecial <|> char '#' <|> char '`' <|> quoteAnyChar
+blockCharP :: KeepSymbolCasing -> CharParser t Char
+blockCharP ksc = notSpecial ksc <|> char '#' <|> char '`' <|> quoteAnyChar
           
-identifierBlocksP :: CharParser t String
-identifierBlocksP = concat <$> some (some blockCharP <|> quotedBlockP)
+identifierBlocksP :: KeepSymbolCasing -> CharParser t String
+identifierBlocksP ksc = concat <$> some (some (blockCharP ksc) <|> quotedBlockP)
 
-lispExprP :: CharParser t (SourceRange -> Lisp)
-lispExprP = choice [ stringP
-                   , listP
-                   , try numP
-                   , try identifierP
-                   , quoteP
-                   , readersP
-                   ]
+lispExprP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+lispExprP ksc = choice [ stringP
+                       , listP ksc
+                       , try (numP ksc)
+                       , try (identifierP ksc)
+                       , quoteP ksc
+                       , readersP ksc
+                       ]
 
-listP :: CharParser t (SourceRange -> Lisp)
-listP =
+listP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+listP ksc =
   label "list" $
   between (char '(') (char ')') $ do
-  elems <- lispParser `sepEndBy` whiteSpace
+  elems <- lispParser ksc `sepEndBy` whiteSpace
   dotElem <- optional $ 
     char '.' *> whiteSpace *>
-    lispParser <* whiteSpace
+    lispParser ksc <* whiteSpace
   pure $ case dotElem of
     Nothing -> LispList elems
     Just (LispList l _) ->  LispList $ elems ++ l
@@ -270,27 +274,27 @@ quoteSymbol symbol quoteExpansion  = do
     LispSymbol quoteExpansion $ SourceRange from $
     from {sourceColumn = mkPos $ length symbol + unPos (sourceColumn from)}
 
-quoteP :: CharParser t (SourceRange -> Lisp)
-quoteP = do
+quoteP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+quoteP ksc = do
   quote <- (quoteSymbol "'" "quote" <|>
             try (quoteSymbol ",@" "unquote-splicing") <|>
             quoteSymbol "," "unquote" <|>
             quoteSymbol "`" "quasiquote")
            <* whiteSpace
-  expr <- lispParser
+  expr <- lispParser ksc
   pure $ \range -> LispList [quote range, expr] range
   
-readersP :: CharParser t (SourceRange -> Lisp)
-readersP = do
+readersP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+readersP ksc = do
   _ <- char '#'
-  (vectorReaderP <|> complexReaderP) <|>
+  (vectorReaderP ksc <|> complexReaderP ksc) <|>
     (octalReaderP <|> hexReaderP <|> binaryReaderP)
-    <* notFollowedBy identifierBlocksP
+    <* notFollowedBy (identifierBlocksP ksc)
 
-vectorReaderP :: CharParser t (SourceRange -> Lisp)
-vectorReaderP = 
+vectorReaderP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+vectorReaderP ksc = 
   between (char '(') (char ')') $
-  LispVector <$> (lispParser `sepEndBy` whiteSpace)
+  LispVector <$> (lispParser ksc `sepEndBy` whiteSpace)
 
 octalReaderP :: CharParser t (SourceRange -> Lisp)
 octalReaderP = do
@@ -325,14 +329,14 @@ convertToDouble l = case l of
   NumRatio r -> realToFrac r
   ComplexDouble _ -> error "convertToDouble"
 
-complexReaderP :: CharParser t (SourceRange -> Lisp)
-complexReaderP = do
+complexReaderP :: KeepSymbolCasing -> CharParser t (SourceRange -> Lisp)
+complexReaderP ksc = do
   _ <- char 'c' <|> char 'C'
   between (char '(') (char ')') $ do
     _ <- many whiteSpace
-    LispNumber rl _ <- ($ dummyRange) <$> numP
+    LispNumber rl _ <- ($ dummyRange) <$> numP ksc
     _ <- some whiteSpace
-    LispNumber imag _ <- ($ dummyRange) <$> numP
+    LispNumber imag _ <- ($ dummyRange) <$> numP ksc
     _ <- many whiteSpace
     pure $ LispNumber $ ComplexDouble $
       convertToDouble rl :+ convertToDouble imag
