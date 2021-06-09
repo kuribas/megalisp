@@ -1,5 +1,5 @@
 Name:		megalisp
-Version: 	0.0.1
+Version: 	0.0.2
 Synopsis:	lisp parser using mega-parsec
 Category: 	Parser
 Copyright: 	Kristof Bastiaensen (2020)
